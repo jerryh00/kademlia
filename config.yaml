@@ -1,0 +1,7 @@
+# key-value pair only, nesting not supported
+
+server_address: 127.0.0.1
+server_port: 17000
+
+test_store_interval: 1000       # milliseconds
+sleep_time: 1000        # milliseconds

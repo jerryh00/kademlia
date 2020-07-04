@@ -3,6 +3,7 @@ extern crate rand;
 extern crate env_logger;
 extern crate log;
 extern crate clap;
+extern crate config;
 
 use rand::Rng;
 use std::{thread, time};
@@ -23,16 +24,18 @@ fn main() -> std::io::Result<()> {
              .takes_value(false))
         .get_matches();
     info!("Init node");
+    let configs_map = common::get_config()?;
+    info!("configs_map={:?}", configs_map);
 
     let test = matches.is_present("test");
     info!("test={}", test);
-    let result = kademlia::Node::new(false, kademlia::KADEMLIA_SERVER_ADDR.as_bytes(), kademlia::KADEMLIA_SERVER_PORT, test);
+    let result = kademlia::Node::new(false, configs_map["server_address"].as_bytes(), configs_map["server_port"].parse::<u16>().unwrap(), test);
     match result {
         Ok(node_user) => {
             debug!("key_len={:?}", node_user.key_len);
             let key:Vec<u8> = rand::thread_rng().sample_iter(&rand::distributions::Standard).take(node_user.key_len).collect();
 
-            let sleep_time = time::Duration::from_millis(1000);
+            let sleep_time = time::Duration::from_millis(configs_map["sleep_time"].parse::<u64>().unwrap());
             while let Err(result) = node_user.store(&key, b"value0") {
                 debug!("store result: {:?}", result);
                 thread::sleep(sleep_time);
@@ -43,7 +46,8 @@ fn main() -> std::io::Result<()> {
                 let key = common::hash(&i.to_le_bytes());
                 while let Err(result) = node_user.find_value(&key) {
                     warn!("find_value failed: i={}, {:?}", i, result);
-                    thread::sleep(2*common::TEST_STORE_INTERVAL);
+                    let test_store_interval = time::Duration::from_millis(configs_map["test_store_interval"].parse::<u64>().unwrap());
+                    thread::sleep(2*test_store_interval);
                 }
                 info!("find_value succeeded: i={}", i);
             }

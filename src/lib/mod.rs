@@ -33,9 +33,6 @@ mod common;
 
 use common::*;
 
-pub const KADEMLIA_SERVER_ADDR: &str = "127.0.0.1";
-pub const KADEMLIA_SERVER_PORT:u16 = 17000;
-
 #[derive(Debug, Clone, Copy)]
 struct ProtoParams {
     id_len: usize,
