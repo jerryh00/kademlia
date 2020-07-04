@@ -6,11 +6,12 @@ extern crate clap;
 use std::{thread, time};
 use log::{info, warn, error};
 use clap::{Arg, App};
+use env_logger::Env;
 
 mod common;
 
 fn main() {
-    env_logger::init();
+    env_logger::from_env(Env::default().default_filter_or("info")).init();
 
     let matches = App::new("server")
         .arg(Arg::with_name("test")
