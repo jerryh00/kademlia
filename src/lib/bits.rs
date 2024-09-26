@@ -1,7 +1,7 @@
 extern crate rand;
 
-use std::iter;
 use self::rand::Rng;
+use std::iter;
 
 pub fn byte_to_bits(input: u8) -> Vec<bool> {
     let mut v = Vec::with_capacity(8);
@@ -42,7 +42,7 @@ pub fn bits_to_byte(bits: &[bool]) -> u8 {
 }
 
 pub fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
-    bits.chunks(8).map(|v|bits_to_byte(v)).collect()
+    bits.chunks(8).map(bits_to_byte).collect()
 }
 
 pub fn bytes_to_bits(input: &[u8]) -> Vec<bool> {
@@ -56,11 +56,7 @@ pub fn bytes_to_bits(input: &[u8]) -> Vec<bool> {
 }
 
 pub fn get_distance(v1: &[u8], v2: &[u8]) -> Vec<u8> {
-    v1
-    .iter()
-    .zip(v2.iter())
-    .map(|(&x1, &x2)| x1 ^ x2)
-    .collect()
+    v1.iter().zip(v2.iter()).map(|(&x1, &x2)| x1 ^ x2).collect()
 }
 
 pub fn gen_random_id_in_bucket(prefix: &[bool], id_len: usize) -> Vec<u8> {
@@ -70,7 +66,10 @@ pub fn gen_random_id_in_bucket(prefix: &[bool], id_len: usize) -> Vec<u8> {
 
     let mut bits_padded = prefix.to_vec();
     if pad_num != 0 {
-        let rand_bits: Vec<bool> = rand::thread_rng().sample_iter(&rand::distributions::Standard).take(pad_num).collect();
+        let rand_bits: Vec<bool> = rand::thread_rng()
+            .sample_iter(&rand::distributions::Standard)
+            .take(pad_num)
+            .collect();
         bits_padded.extend(rand_bits);
     }
 
@@ -94,7 +93,7 @@ fn test_byte_to_bits() {
 #[test]
 fn test_bytes_to_bits() {
     let v = [0xFF, 0x00, 0xFE];
-    let mut result =[true; 8].to_vec();
+    let mut result = [true; 8].to_vec();
     result.extend([false; 8].to_vec());
     result.extend([true, true, true, true, true, true, true, false].to_vec());
 
@@ -115,25 +114,31 @@ fn test_get_distance() {
 
 #[test]
 fn test_bits_to_bytes() {
-    let v1 = vec!(true, false, true, false);
+    let v1 = vec![true, false, true, false];
     let mut result = bits_to_bytes(&v1);
 
     assert!(result == vec!(0b10100000));
 
-    let v2 = vec!(true, true, true, true, true, false, true, false,
-                  true);
+    let v2 = vec![true, true, true, true, true, false, true, false, true];
     result = bits_to_bytes(&v2);
     assert!(result == vec!(0b11111010, 0b10000000));
 }
 
 #[test]
 fn test_gen_random_id_in_bucket() {
-    let prefix = vec!(true, false, true, false);
+    let prefix = vec![true, false, true, false];
     let id_len = 8;
     let id = gen_random_id_in_bucket(&prefix, id_len);
     assert!(id.len() == id_len);
     let bits = bytes_to_bits(&id);
-    assert!(prefix == bits.iter().map(|&x|x).take(prefix.len()).collect::<Vec<_>>());
+    assert!(
+        prefix
+            == bits
+                .iter()
+                .map(|&x| x)
+                .take(prefix.len())
+                .collect::<Vec<_>>()
+    );
 
     let id2 = gen_random_id_in_bucket(&prefix, id_len);
     assert!(id != id2); // assume two consectively generated random ids will no be equal

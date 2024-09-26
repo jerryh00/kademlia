@@ -2,6 +2,7 @@
 name = "kademlia"
 version = "0.1.0"
 authors = ["jerryh00 <60069563+jerryh00@users.noreply.github.com>"]
+edition = "2021"
 
 default-run = "node"
 
@@ -18,16 +19,17 @@ name = "server"
 path = "src/bin/server.rs"
 
 [dependencies]
-nix = ""
-rand = ""
-timer = ""
-chrono = ""
-derivative = ""
-serde_json = ""
-serde = { version = "1.0", features = ["derive"] }
-log = ""
-env_logger = ""
-sha2 = ""
-clap = ""
-circular-queue = ""
-config = ""
+chrono = "0.4.38"
+circular-queue = "0.2.6"
+clap = "4.5.18"
+config = "0.14.0"
+derivative = "2.2.0"
+env_logger = "0.11.5"
+log = "0.4.22"
+nix = "0.29.0"
+rand = "0.8.5"
+rand_distr = "0.4.3"
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+sha2 = "0.10.8"
+timer = "0.2.0"

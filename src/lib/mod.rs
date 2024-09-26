@@ -1,29 +1,30 @@
-extern crate serde_json;
-extern crate rand;
-extern crate timer;
 extern crate chrono;
+extern crate circular_queue;
 extern crate derivative;
 extern crate log;
-extern crate circular_queue;
+extern crate rand;
+extern crate rand_distr;
+extern crate serde_json;
+extern crate timer;
 
-use std::net::{UdpSocket, SocketAddr};
-use std::io::Result;
-use std::thread;
-use std::sync::mpsc;
-use self::serde_json::json;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::ascii::escape_default;
-use self::derivative::Derivative;
-use self::rand::{thread_rng, Rng};
-use self::rand::distributions::{Normal, Distribution};
-use self::log::{error, warn, info, debug, trace};
-use std::str;
-use std::iter;
 use self::chrono::Utc;
 use self::circular_queue::CircularQueue;
-use std::collections::VecDeque;
+use self::derivative::Derivative;
+use self::log::{debug, error, info, trace, warn};
+use self::rand::{thread_rng, Rng};
+use self::rand_distr::{Distribution, Normal};
+use self::serde_json::json;
+use std::ascii::escape_default;
 use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::io::Result;
+use std::iter;
+use std::net::{SocketAddr, UdpSocket};
+use std::str;
+use std::sync::mpsc;
+use std::thread;
 
 mod node_tree;
 use node_tree::*;
@@ -49,7 +50,7 @@ struct ProtoParams {
     delay_stddev: f64,
 }
 
-const PROTO_PARAMS:ProtoParams = ProtoParams {
+const PROTO_PARAMS: ProtoParams = ProtoParams {
     id_len: 32,
     rpc_id_len: 20,
     rpc_timeout: 5,
@@ -64,7 +65,7 @@ const PROTO_PARAMS:ProtoParams = ProtoParams {
     delay_stddev: 0.0,
 };
 
-const PROTO_PARAMS_TEST:ProtoParams = ProtoParams {
+const PROTO_PARAMS_TEST: ProtoParams = ProtoParams {
     id_len: 32,
     rpc_id_len: 8,
     rpc_timeout: 3,
@@ -99,7 +100,7 @@ struct NodeRespStat {
     rpc_id: Vec<u8>,
     resp_stat: RespStat,
 
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     guard: Option<timer::Guard>,
 }
 
@@ -109,7 +110,7 @@ enum RespStat {
     Sent,
     Received,
     ReceivedFailure,
-    Timeout
+    Timeout,
 }
 
 impl Node {
@@ -120,24 +121,39 @@ impl Node {
         let mut proto_params;
         if test {
             proto_params = PROTO_PARAMS_TEST;
-            proto_params.delay_avg = thread_rng().gen_range(0.0, 1.0);
-            proto_params.delay_stddev = thread_rng().gen_range(0.0, proto_params.delay_avg);
+            proto_params.delay_avg = thread_rng().gen_range(0.0..1.0);
+            proto_params.delay_stddev = thread_rng().gen_range(0.0..proto_params.delay_avg);
         } else {
             proto_params = PROTO_PARAMS;
         }
-        let result = NodeMain::new(proto_params, is_server, server_addr, server_port, to_main_tx.clone(), to_main_rx, main_to_user_tx);
+        let result = NodeMain::new(
+            proto_params,
+            is_server,
+            server_addr,
+            server_port,
+            to_main_tx.clone(),
+            to_main_rx,
+            main_to_user_tx,
+        );
         match result {
             Ok(node_main) => {
-                thread::Builder::new().name("main_thread".into()).
-                    spawn(move || {
+                thread::Builder::new()
+                    .name("main_thread".into())
+                    .spawn(move || {
                         let result = NodeMain::main_func(node_main);
                         match result {
                             Ok(_) => (),
-                            Err(err) => { error!("main_thread failed: {:?}", err); }
+                            Err(err) => {
+                                error!("main_thread failed: {:?}", err);
+                            }
                         };
-                    }).expect("thread spawn() should not fail");
+                    })
+                    .expect("thread spawn() should not fail");
 
-                Ok(Node{key_len:proto_params.id_len, to_main_tx, main_to_user_rx,
+                Ok(Node {
+                    key_len: proto_params.id_len,
+                    to_main_tx,
+                    main_to_user_rx,
                     num_store_ok: Cell::new(0),
                     store_time_total: Cell::new(0),
                     store_time_avg: Cell::new(0),
@@ -148,7 +164,10 @@ impl Node {
             }
             Err(err) => {
                 error!("kademlia::Node::new failed: {:?}", err);
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "Node new() failed"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Node new() failed",
+                ))
             }
         }
     }
@@ -158,42 +177,67 @@ impl Node {
         let begin_timestamp = Utc::now().timestamp_millis();
 
         if key.len() != self.key_len {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid key length"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Invalid key length",
+            ));
         }
         let message = Message::UserCmdStore(key.to_vec(), value.to_vec());
         if self.to_main_tx.send(message).is_err() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "store send failed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "store send failed",
+            ));
         }
         if let Ok(result) = self.main_to_user_rx.recv() {
             self.num_store_ok.set(self.num_store_ok.get() + 1);
             let store_time = Utc::now().timestamp_millis() - begin_timestamp;
-            self.store_time_total.set(self.store_time_total.get() + store_time);
-            self.store_time_avg.set(self.store_time_total.get() / self.num_store_ok.get());
-            result.map(|_|())
+            self.store_time_total
+                .set(self.store_time_total.get() + store_time);
+            self.store_time_avg
+                .set(self.store_time_total.get() / self.num_store_ok.get());
+            result.map(|_| ())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "store recv failed"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "store recv failed",
+            ))
         }
     }
 
     pub fn find_value(&self, key: &[u8]) -> Result<Vec<u8>> {
-        info!("Average findvalue time: {} ms", self.findvalue_time_avg.get());
+        info!(
+            "Average findvalue time: {} ms",
+            self.findvalue_time_avg.get()
+        );
         let begin_timestamp = Utc::now().timestamp_millis();
 
         if key.len() != self.key_len {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid key length"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Invalid key length",
+            ));
         }
         let message = Message::UserCmdFindValue(key.to_vec());
         if self.to_main_tx.send(message).is_err() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "find_value send failed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "find_value send failed",
+            ));
         }
         if let Ok(result) = self.main_to_user_rx.recv() {
             self.num_findvalue_ok.set(self.num_findvalue_ok.get() + 1);
             let findvalue_time = Utc::now().timestamp_millis() - begin_timestamp;
-            self.findvalue_time_total.set(self.findvalue_time_total.get() + findvalue_time);
-            self.findvalue_time_avg.set(self.findvalue_time_total.get() / self.num_findvalue_ok.get());
+            self.findvalue_time_total
+                .set(self.findvalue_time_total.get() + findvalue_time);
+            self.findvalue_time_avg
+                .set(self.findvalue_time_total.get() / self.num_findvalue_ok.get());
             result
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "find_value recv failed"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "find_value recv failed",
+            ))
         }
     }
 }
@@ -232,11 +276,11 @@ struct NodeMain {
 
     data_store: HashMap<Vec<u8>, (Vec<u8>, i64)>,
 
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     timer: timer::Timer,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     republish_guard: Option<timer::Guard>,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     refresh_guard: Option<timer::Guard>,
 
     num_net_datagram: u64,
@@ -258,7 +302,7 @@ enum NodeMainStatus {
     Lookup,
     StoreLookup,
     StoreStore,
-    FindValue
+    FindValue,
 }
 
 #[derive(Debug)]
@@ -278,31 +322,60 @@ fn gen_server_id(id_len: usize) -> Vec<u8> {
 }
 
 fn gen_node_id(id_len: usize) -> Vec<u8> {
-    rand::thread_rng().sample_iter(&rand::distributions::Standard).take(id_len).collect()
+    rand::thread_rng()
+        .sample_iter(&rand::distributions::Standard)
+        .take(id_len)
+        .collect()
 }
 
 impl NodeMain {
-    pub fn new(proto_params: ProtoParams, is_server: bool, server_addr: &[u8], server_port: u16, to_main_tx: mpsc::Sender<Message>, to_main_rx: mpsc::Receiver<Message>, main_to_user_tx: mpsc::Sender<Result<Vec<u8>>>) -> Result<Self> {
+    pub fn new(
+        proto_params: ProtoParams,
+        is_server: bool,
+        server_addr: &[u8],
+        server_port: u16,
+        to_main_tx: mpsc::Sender<Message>,
+        to_main_rx: mpsc::Receiver<Message>,
+        main_to_user_tx: mpsc::Sender<Result<Vec<u8>>>,
+    ) -> Result<Self> {
         let port = if is_server { server_port } else { 0 };
 
         let server_id = gen_server_id(proto_params.id_len);
-        let id = if is_server { server_id.clone() } else { gen_node_id(proto_params.id_len) };
+        let id = if is_server {
+            server_id.clone()
+        } else {
+            gen_node_id(proto_params.id_len)
+        };
         let mut tree = Box::new(NodeTree::new(proto_params.bucket_len, &id));
-        let server_entry = Box::new(NodeEntry { addr: server_addr.to_vec(), port: server_port, id: server_id });
-        tree.put_node(*server_entry).expect("Server node entry insertion should not fail");
+        let server_entry = Box::new(NodeEntry {
+            addr: server_addr.to_vec(),
+            port: server_port,
+            id: server_id,
+        });
+        tree.put_node(*server_entry)
+            .expect("Server node entry insertion should not fail");
 
-        let socket = UdpSocket::bind((std::str::from_utf8(server_addr).expect("server address should be a utf8 string"), port))?;
+        let socket = UdpSocket::bind((
+            std::str::from_utf8(server_addr).expect("server address should be a utf8 string"),
+            port,
+        ))?;
 
-        let _socket = socket.try_clone().expect("socket try_clone() should not fail");
+        let _socket = socket
+            .try_clone()
+            .expect("socket try_clone() should not fail");
         let _to_main_tx = to_main_tx.clone();
-        thread::Builder::new().name("network_thread".into()).
-            spawn(move || {
+        thread::Builder::new()
+            .name("network_thread".into())
+            .spawn(move || {
                 let result = NodeMain::network_func(_socket, _to_main_tx, proto_params);
                 match result {
                     Ok(_) => (),
-                    Err(err) => { error!("network_thread failed: {:?}", err); }
+                    Err(err) => {
+                        error!("network_thread failed: {:?}", err);
+                    }
                 };
-            }).expect("thread spawn() should not fail");
+            })
+            .expect("thread spawn() should not fail");
 
         let node_main = NodeMain {
             proto_params,
@@ -355,17 +428,23 @@ impl NodeMain {
         }
 
         let _to_main_tx = node.to_main_tx.clone();
-        let _guard = node.timer.schedule_repeating(chrono::Duration::seconds(node.proto_params.republish_interval), move || {
-            let message = Message::Republish;
-            let _ignored = _to_main_tx.send(message);
-        });
+        let _guard = node.timer.schedule_repeating(
+            chrono::Duration::seconds(node.proto_params.republish_interval),
+            move || {
+                let message = Message::Republish;
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
         node.republish_guard = Some(_guard);
 
         let _to_main_tx = node.to_main_tx.clone();
-        let _guard = node.timer.schedule_repeating(chrono::Duration::seconds(node.proto_params.refresh_interval), move || {
-            let message = Message::Refresh;
-            let _ignored = _to_main_tx.send(message);
-        });
+        let _guard = node.timer.schedule_repeating(
+            chrono::Duration::seconds(node.proto_params.refresh_interval),
+            move || {
+                let message = Message::Refresh;
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
         node.refresh_guard = Some(_guard);
 
         loop {
@@ -384,13 +463,20 @@ impl NodeMain {
                     debug!("handle_message failed: {:?}", err);
                 }
             } else {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "main_func recv failed"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "main_func recv failed",
+                ));
             }
             node.print_stat();
         }
     }
 
-    fn network_func(socket: UdpSocket, to_main_tx: mpsc::Sender<Message>, proto_params: ProtoParams) -> Result<()> {
+    fn network_func(
+        socket: UdpSocket,
+        to_main_tx: mpsc::Sender<Message>,
+        proto_params: ProtoParams,
+    ) -> Result<()> {
         if proto_params.test_mode {
             let delay_timer = timer::Timer::new();
 
@@ -398,10 +484,10 @@ impl NodeMain {
              * If datagram traffic is too high, the circular guard buffer would overflow, old
              * pending guard would be overwritten and the assoicated datagram would not be sent
              */
-            let max_num_pending_guard = 300;    /* Empirical value */
+            let max_num_pending_guard = 300; /* Empirical value */
             let mut guard_store = CircularQueue::with_capacity(max_num_pending_guard);
 
-            let normal = Normal::new(proto_params.delay_avg, proto_params.delay_stddev);
+            let normal = Normal::new(proto_params.delay_avg, proto_params.delay_stddev).unwrap();
 
             loop {
                 let (recv, src) = read_message_udp(&socket)?;
@@ -417,12 +503,15 @@ impl NodeMain {
                 };
                 debug!("Adding delay={} us to datagram for test", delay);
                 let _to_main_tx = to_main_tx.clone();
-                let _guard = delay_timer.schedule_with_delay(chrono::Duration::microseconds(delay as i64), move || {
-                    let message = Message::NetDatagram(recv.clone(), src);
-                    if let Err(err) = _to_main_tx.send(message) {
-                        error!("send fail: {:?}", err);
-                    }
-                });
+                let _guard = delay_timer.schedule_with_delay(
+                    chrono::Duration::microseconds(delay as i64),
+                    move || {
+                        let message = Message::NetDatagram(recv.clone(), src);
+                        if let Err(err) = _to_main_tx.send(message) {
+                            error!("send fail: {:?}", err);
+                        }
+                    },
+                );
                 guard_store.push(_guard);
             }
         } else {
@@ -459,24 +548,37 @@ impl NodeMain {
             if let Ok(result) = std::str::from_utf8(&recv) {
                 recv_str = result;
             } else {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "datagram is not utf8 string"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "datagram is not utf8 string",
+                ));
             }
-            if let Ok(serde_json::Value::Object(msg)) = serde_json::from_str(&recv_str) {
+            if let Ok(serde_json::Value::Object(msg)) = serde_json::from_str(recv_str) {
                 trace!("received in json: {:?}", msg);
 
                 let node_id: Vec<u8>;
                 if let Some(object) = msg.get(NODE_ID) {
                     node_id = serde_json::from_value(object.clone()).unwrap();
                     debug!("node_id={:?}", node_id);
-                    let node_entry = NodeEntry { addr: src.ip().to_string().into_bytes(), port: src.port(), id: node_id.clone() };
+                    let node_entry = NodeEntry {
+                        addr: src.ip().to_string().into_bytes(),
+                        port: src.port(),
+                        id: node_id.clone(),
+                    };
                     if let Err(old_node_entry) = self.tree.put_node(node_entry.clone()) {
-                        debug!("put_node failed, to ping old node_entry: {:?}", &old_node_entry);
+                        debug!(
+                            "put_node failed, to ping old node_entry: {:?}",
+                            &old_node_entry
+                        );
                         if let Err(err) = self.ping(&old_node_entry, &node_entry) {
                             error!("ping failed: {:?}", err);
                         }
                     }
                 } else {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, "no node id in datagram"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "no node id in datagram",
+                    ));
                 }
 
                 if let Some(serde_json::Value::String(function)) = msg.get(FUNCTION) {
@@ -505,7 +607,10 @@ impl NodeMain {
             }
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
@@ -519,15 +624,24 @@ impl NodeMain {
                 self.set_status(NodeMainStatus::StoreLookup);
                 self.store_is_from_user = true;
 
-                info!("UserCmdStore: key={}, value={}", show_buf(&key), show_buf(&value));
+                info!(
+                    "UserCmdStore: key={}, value={}",
+                    show_buf(&key),
+                    show_buf(&value)
+                );
                 if let Err(err) = self.store(&key, &value) {
-                    self.main_to_user_tx.send(Err(err)).expect("channel send() should not fail");
+                    self.main_to_user_tx
+                        .send(Err(err))
+                        .expect("channel send() should not fail");
                 }
             }
 
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
@@ -542,28 +656,47 @@ impl NodeMain {
                 debug!("FindValue: key={}", show_buf(&key));
 
                 if let Err(err) = self.find_value(&key) {
-                    self.main_to_user_tx.send(Err(err)).expect("channel send() should not fail");
+                    self.main_to_user_tx
+                        .send(Err(err))
+                        .expect("channel send() should not fail");
                 }
             }
 
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
     fn handle_storelookup_over(&mut self) {
-        let node_entries: Vec<NodeEntry> = self.find_node_resp_stat.values().cloned().take(self.proto_params.bucket_len)
-            .filter(|(_, resp_stat)|*resp_stat == RespStat::Received)
-            .map(|(node_entry, _)|node_entry)
+        let node_entries: Vec<NodeEntry> = self
+            .find_node_resp_stat
+            .values()
+            .take(self.proto_params.bucket_len)
+            .filter(|(_, resp_stat)| *resp_stat == RespStat::Received)
+            .cloned()
+            .map(|(node_entry, _)| node_entry)
             .collect();
         if node_entries.is_empty() {
-            self.main_to_user_tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, "store failed: no dest nodes available"))).expect("channel send() should not fail");
+            self.main_to_user_tx
+                .send(Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "store failed: no dest nodes available",
+                )))
+                .expect("channel send() should not fail");
             self.set_status(NodeMainStatus::Idle);
             return;
         }
 
-        NodeMain::update_node_resp_stat(&self.key, node_entries.clone(), &mut self.store_resp_stat, RespStat::Sent);
+        NodeMain::update_node_resp_stat(
+            &self.key,
+            node_entries.clone(),
+            &mut self.store_resp_stat,
+            RespStat::Sent,
+        );
         let key = self.key.clone();
         let value = self.value.clone();
         self.set_status(NodeMainStatus::StoreStore);
@@ -586,7 +719,10 @@ impl NodeMain {
         }
 
         if self.status == NodeMainStatus::Lookup {
-            trace!("Ending lookup_node, find_node_resp_stat: {:?}", &self.find_node_resp_stat);
+            trace!(
+                "Ending lookup_node, find_node_resp_stat: {:?}",
+                &self.find_node_resp_stat
+            );
             self.set_status(NodeMainStatus::Idle);
         } else if self.status == NodeMainStatus::StoreLookup {
             self.handle_storelookup_over();
@@ -609,9 +745,16 @@ impl NodeMain {
         trace!("Ending store, store_resp_stat: {:?}", self.store_resp_stat);
         if self.store_is_from_user {
             if self.is_store_complete() {
-                self.main_to_user_tx.send(Ok(b"success".to_vec())).expect("channel send() should not fail");
+                self.main_to_user_tx
+                    .send(Ok(b"success".to_vec()))
+                    .expect("channel send() should not fail");
             } else {
-                self.main_to_user_tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, "store timeout"))).expect("channel send() should not fail");
+                self.main_to_user_tx
+                    .send(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "store timeout",
+                    )))
+                    .expect("channel send() should not fail");
             }
         }
         self.set_status(NodeMainStatus::Idle);
@@ -629,7 +772,10 @@ impl NodeMain {
         }
 
         debug!("Ending find_value");
-        let result = self.main_to_user_tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, "find_value timeout")));
+        let result = self.main_to_user_tx.send(Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "find_value timeout",
+        )));
         debug!("send result: {:?}", result);
         self.set_status(NodeMainStatus::Idle);
         Ok(())
@@ -647,7 +793,10 @@ impl NodeMain {
         debug!("Removing node: {:?}", &node_entry);
         self.tree.remove_node(&node_entry.id);
         if let Err(old_node_entry) = self.tree.put_node(_replacement.clone()) {
-            debug!("put_node failed, to ping old node_entry: {:?}", &old_node_entry);
+            debug!(
+                "put_node failed, to ping old node_entry: {:?}",
+                &old_node_entry
+            );
             if let Err(err) = self.ping(&old_node_entry, &_replacement) {
                 error!("ping failed: {:?}", err);
             }
@@ -661,9 +810,13 @@ impl NodeMain {
     fn handle_timeout(&mut self, message: Message) -> Result<()> {
         if let Message::Timeout(cmd, node_entry) = message {
             self.num_timeout += 1;
-            debug!("Timeout: cmd={}, node_entry={:?}", show_buf(&cmd), node_entry);
+            debug!(
+                "Timeout: cmd={}, node_entry={:?}",
+                show_buf(&cmd),
+                node_entry
+            );
             if str::from_utf8(&cmd).unwrap() == PING {
-                if let Some((_, node_resp_stat)) = self.ping_resp_stat.get_mut(&node_entry.clone()) {
+                if let Some((_, node_resp_stat)) = self.ping_resp_stat.get_mut(&node_entry) {
                     node_resp_stat.resp_stat = RespStat::Timeout;
                 } else {
                     debug!("bogus ping message timeout");
@@ -671,7 +824,10 @@ impl NodeMain {
                 }
             }
 
-            if let Some(node_resp_stat) = self.cmd_dest_resp.get_mut(&(cmd.clone(), node_entry.clone())) {
+            if let Some(node_resp_stat) = self
+                .cmd_dest_resp
+                .get_mut(&(cmd.clone(), node_entry.clone()))
+            {
                 node_resp_stat.resp_stat = RespStat::Timeout;
             } else {
                 debug!("bogus message timeout");
@@ -683,10 +839,16 @@ impl NodeMain {
                 STORE => self.handle_timeout_store(node_entry),
                 FIND_VALUE => self.handle_timeout_find_value(node_entry),
                 PING => self.handle_timeout_ping(node_entry),
-                &_ => { warn!("unrecognized cmd: {:?}", cmd); Ok(()) }
+                &_ => {
+                    warn!("unrecognized cmd: {:?}", cmd);
+                    Ok(())
+                }
             }
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
@@ -701,7 +863,10 @@ impl NodeMain {
             }
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
@@ -713,14 +878,16 @@ impl NodeMain {
                 for (key, (value, timestamp)) in &self.data_store {
                     let now = Utc::now().timestamp();
                     if now - timestamp > self.proto_params.republish_interval {
-                        self.msg_buf.push_back(Message::RepublishSingle(key.to_vec(), value.to_vec()));
+                        self.msg_buf
+                            .push_back(Message::RepublishSingle(key.to_vec(), value.to_vec()));
                     }
                 }
                 Ok(())
             }
-            _ => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
-            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            )),
         }
     }
 
@@ -729,87 +896,137 @@ impl NodeMain {
         match message {
             Message::Refresh => {
                 debug!("Refresh");
-                for prefix in self.tree.get_inactive_kbuckets_prefix(chrono::Utc::now().timestamp() - self.proto_params.refresh_interval) {
+                for prefix in self.tree.get_inactive_kbuckets_prefix(
+                    chrono::Utc::now().timestamp() - self.proto_params.refresh_interval,
+                ) {
                     let node_id = bits::gen_random_id_in_bucket(&prefix, self.proto_params.id_len);
-                    debug!("prefix: {:?}, random node_id={}", &prefix, show_buf(&node_id));
+                    debug!(
+                        "prefix: {:?}, random node_id={}",
+                        &prefix,
+                        show_buf(&node_id)
+                    );
                     self.msg_buf.push_back(Message::Lookup(node_id));
                 }
                 Ok(())
             }
-            _ => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
-            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            )),
         }
     }
 
     fn handle_republish_single(&mut self, message: Message) -> Result<()> {
         if let Message::RepublishSingle(key, value) = message {
             self.num_republish_single += 1;
-            debug!("RepublishSingle: key={}, value={:?}", show_buf(&key), show_buf(&value));
+            debug!(
+                "RepublishSingle: key={}, value={:?}",
+                show_buf(&key),
+                show_buf(&value)
+            );
 
             self.set_status(NodeMainStatus::StoreLookup);
             self.store_is_from_user = false;
 
             if self.store(&key, &value).is_err() {
-                warn!("RepublishSingle failed: key={}, value={:?}", show_buf(&key), show_buf(&value));
+                warn!(
+                    "RepublishSingle failed: key={}, value={:?}",
+                    show_buf(&key),
+                    show_buf(&value)
+                );
             }
 
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "message type error"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "message type error",
+            ))
         }
     }
 
     fn handle_message(&mut self, message: Message) -> Result<()> {
         self.num_total_msg += 1;
         match message {
-            m@Message::NetDatagram(..) => self.handle_net_datagram(m),
-            m@Message::UserCmdStore(..) => self.handle_user_cmd_store(m),
-            m@Message::UserCmdFindValue(..) => self.handle_user_cmd_findvalue(m),
-            m@Message::Timeout(..) => self.handle_timeout(m),
-            m@Message::Lookup(..) => self.handle_lookup(m),
-            m@Message::Republish => self.handle_republish(m),
-            m@Message::RepublishSingle(..) => self.handle_republish_single(m),
-            m@Message::Refresh => self.handle_refresh(m),
+            m @ Message::NetDatagram(..) => self.handle_net_datagram(m),
+            m @ Message::UserCmdStore(..) => self.handle_user_cmd_store(m),
+            m @ Message::UserCmdFindValue(..) => self.handle_user_cmd_findvalue(m),
+            m @ Message::Timeout(..) => self.handle_timeout(m),
+            m @ Message::Lookup(..) => self.handle_lookup(m),
+            m @ Message::Republish => self.handle_republish(m),
+            m @ Message::RepublishSingle(..) => self.handle_republish_single(m),
+            m @ Message::Refresh => self.handle_refresh(m),
         }
     }
 
-    fn handle_ping(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_ping(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got ping: {}", src);
         if let Some(object) = msg.get(RPC_ID) {
             let rpc_id: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
-            self.ping_ack(&node_id, &rpc_id, src)
+            self.ping_ack(node_id, &rpc_id, src)
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "no rpc id in ping"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no rpc id in ping",
+            ))
         }
     }
 
-    fn compare_rpc_id(rpc_id_sent: &[u8], msg: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    fn compare_rpc_id(
+        rpc_id_sent: &[u8],
+        msg: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
         if let Some(object) = msg.get(RPC_ID) {
             let rpc_id: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
             if rpc_id != rpc_id_sent {
-                debug!("incorrect rpc id in ack, expecting: {:?}, got: {:?}", rpc_id_sent, rpc_id);
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "incorrect rpc id in ack"));
+                debug!(
+                    "incorrect rpc id in ack, expecting: {:?}, got: {:?}",
+                    rpc_id_sent, rpc_id
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "incorrect rpc id in ack",
+                ));
             }
         } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "no rpc id in ack"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no rpc id in ack",
+            ));
         }
 
         Ok(())
     }
 
-    fn handle_ping_ack(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_ping_ack(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got ping ack: {}", src);
         debug!("node_id={:?}", node_id);
 
-        let node_entry = NodeEntry { addr: src.ip().to_string().into_bytes(), port: src.port(), id: node_id.to_owned() };
-        if let Some((_, node_resp_stat)) = self.ping_resp_stat.get_mut(&node_entry.clone()) {
+        let node_entry = NodeEntry {
+            addr: src.ip().to_string().into_bytes(),
+            port: src.port(),
+            id: node_id.to_owned(),
+        };
+        if let Some((_, node_resp_stat)) = self.ping_resp_stat.get_mut(&node_entry) {
             let result = NodeMain::compare_rpc_id(&node_resp_stat.rpc_id, msg);
             if result.is_ok() {
                 node_resp_stat.resp_stat = RespStat::Received;
                 node_resp_stat.guard = None;
             } else {
-                debug!("handle_ping_ack: compare_rpc_id failed {:?}, src={}", result, src);
+                debug!(
+                    "handle_ping_ack: compare_rpc_id failed {:?}, src={}",
+                    result, src
+                );
                 return Ok(());
             }
         } else {
@@ -819,7 +1036,10 @@ impl NodeMain {
 
         /* By put_node(), Update node_entry's kbucket position to be most-recently seen */
         if let Err(old_node_entry) = self.tree.put_node(node_entry.clone()) {
-            debug!("put_node failed, to ping old node_entry: {:?}", &old_node_entry);
+            debug!(
+                "put_node failed, to ping old node_entry: {:?}",
+                &old_node_entry
+            );
             if let Err(err) = self.ping(&old_node_entry, &node_entry) {
                 error!("ping failed: {:?}", err);
             }
@@ -831,40 +1051,70 @@ impl NodeMain {
         Ok(())
     }
 
-    fn handle_find_value(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_find_value(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got find_value request: {}", src);
         debug!("node_id={:?}", node_id);
         if let Some(object) = msg.get(RPC_ID) {
             let rpc_id: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
             if let Some(object) = msg.get(KEY) {
                 let key: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
-                self.find_value_ack(&node_id, &rpc_id, &key, src)
+                self.find_value_ack(node_id, &rpc_id, &key, src)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "no key in find_value request"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "no key in find_value request",
+                ))
             }
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "no rpc id in find_value request"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no rpc id in find_value request",
+            ))
         }
     }
 
-    fn handle_find_node(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_find_node(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got find_node request: {}", src);
         debug!("node_id={:?}", node_id);
         if let Some(object) = msg.get(RPC_ID) {
             let rpc_id: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
             if let Some(object) = msg.get(TARGET_NODE_ID) {
                 let target_node_id: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
-                self.find_node_ack(&node_id, &rpc_id, &target_node_id, src)
+                self.find_node_ack(node_id, &rpc_id, &target_node_id, src)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "no target node id in find_node request"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "no target node id in find_node request",
+                ))
             }
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "no rpc id in find_node request"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no rpc id in find_node request",
+            ))
         }
     }
 
-    fn check_rpc_id(&mut self, msg: &serde_json::Map<String, serde_json::Value>, function: Vec<u8>, node_entry: &NodeEntry) -> Result<()> {
-        if let Some(node_resp_stat) = self.cmd_dest_resp.get_mut(&(function.clone(), node_entry.clone())) {
+    fn check_rpc_id(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        function: Vec<u8>,
+        node_entry: &NodeEntry,
+    ) -> Result<()> {
+        if let Some(node_resp_stat) = self
+            .cmd_dest_resp
+            .get_mut(&(function.clone(), node_entry.clone()))
+        {
             let result = NodeMain::compare_rpc_id(&node_resp_stat.rpc_id, msg);
             if result.is_ok() {
                 node_resp_stat.resp_stat = RespStat::Received;
@@ -872,17 +1122,33 @@ impl NodeMain {
             }
             result
         } else {
-            debug!("bogus ack: function: {}, node_entry: {:?}", show_buf(function), node_entry);
+            debug!(
+                "bogus ack: function: {}, node_entry: {:?}",
+                show_buf(function),
+                node_entry
+            );
             Err(std::io::Error::new(std::io::ErrorKind::Other, "bogus ack"))
         }
     }
 
-    fn handle_find_node_ack(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_find_node_ack(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got find node ack: {}", src);
         debug!("node_id={:?}", node_id);
 
-        let node_entry = NodeEntry { addr: src.ip().to_string().into_bytes(), port: src.port(), id: node_id.to_vec() };
-        if self.check_rpc_id(msg, FIND_NODE.as_bytes().to_vec(), &node_entry).is_err() {
+        let node_entry = NodeEntry {
+            addr: src.ip().to_string().into_bytes(),
+            port: src.port(),
+            id: node_id.to_vec(),
+        };
+        if self
+            .check_rpc_id(msg, FIND_NODE.as_bytes().to_vec(), &node_entry)
+            .is_err()
+        {
             return Ok(());
         }
 
@@ -895,30 +1161,53 @@ impl NodeMain {
             let node_entries: Vec<NodeEntry> = serde_json::from_value(object.clone()).unwrap();
             trace!("node_entries: {:?}", node_entries);
 
-            NodeMain::update_node_resp_stat(&self.target_node_id, node_entries, &mut self.find_node_resp_stat, RespStat::Init);
+            NodeMain::update_node_resp_stat(
+                &self.target_node_id,
+                node_entries,
+                &mut self.find_node_resp_stat,
+                RespStat::Init,
+            );
             if self.try_find_node_req().is_ok() {
                 return Ok(());
             }
 
             if self.status == NodeMainStatus::Lookup {
-                trace!("Ending lookup_node, find_node_resp_stat: {:?}", &self.find_node_resp_stat);
+                trace!(
+                    "Ending lookup_node, find_node_resp_stat: {:?}",
+                    &self.find_node_resp_stat
+                );
                 self.set_status(NodeMainStatus::Idle);
             } else if self.status == NodeMainStatus::StoreLookup {
                 self.handle_storelookup_over();
             }
         } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "no node entries in find_node ack"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no node entries in find_node ack",
+            ));
         }
 
         Ok(())
     }
 
-    fn handle_find_value_ack(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_find_value_ack(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got find value ack: {}", src);
         debug!("node_id={:?}", node_id);
 
-        let node_entry = NodeEntry { addr: src.ip().to_string().into_bytes(), port: src.port(), id: node_id.to_vec() };
-        if self.check_rpc_id(msg, FIND_VALUE.as_bytes().to_vec(), &node_entry).is_err() {
+        let node_entry = NodeEntry {
+            addr: src.ip().to_string().into_bytes(),
+            port: src.port(),
+            id: node_id.to_vec(),
+        };
+        if self
+            .check_rpc_id(msg, FIND_VALUE.as_bytes().to_vec(), &node_entry)
+            .is_err()
+        {
             return Ok(());
         }
 
@@ -943,23 +1232,42 @@ impl NodeMain {
             let node_entries: Vec<NodeEntry> = serde_json::from_value(object.clone()).unwrap();
             trace!("node_entries: {:?}", node_entries);
 
-            NodeMain::update_node_resp_stat(&self.target_node_id, node_entries, &mut self.find_value_resp_stat, RespStat::Init);
+            NodeMain::update_node_resp_stat(
+                &self.target_node_id,
+                node_entries,
+                &mut self.find_value_resp_stat,
+                RespStat::Init,
+            );
             if self.try_find_value_req().is_ok() {
                 return Ok(());
             }
 
-            debug!("Ending lookup_value, find_value_resp_stat: {:?}", self.find_value_resp_stat);
-            let result = self.main_to_user_tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, "value not found")));
+            debug!(
+                "Ending lookup_value, find_value_resp_stat: {:?}",
+                self.find_value_resp_stat
+            );
+            let result = self.main_to_user_tx.send(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "value not found",
+            )));
             debug!("send result: {:?}", result);
             self.set_status(NodeMainStatus::Idle);
         } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "no node entries in find_value ack"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no node entries in find_value ack",
+            ));
         }
 
         Ok(())
     }
 
-    fn handle_store_req(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_store_req(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got store request: {}", src);
         debug!("node_id={:?}", node_id);
         if let Some(object) = msg.get(RPC_ID) {
@@ -968,41 +1276,69 @@ impl NodeMain {
                 let key: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
                 if let Some(object) = msg.get(VALUE) {
                     let value: Vec<u8> = serde_json::from_value(object.clone()).unwrap();
-                    self.store_ack(&node_id, &rpc_id, &key, &value, src)
+                    self.store_ack(node_id, &rpc_id, &key, &value, src)
                 } else {
-                    Err(std::io::Error::new(std::io::ErrorKind::Other, "no value in store request"))
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "no value in store request",
+                    ))
                 }
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "no key in store request"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "no key in store request",
+                ))
             }
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "no rpc id in store request"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no rpc id in store request",
+            ))
         }
     }
 
     fn is_store_complete(&self) -> bool {
-        self.store_resp_stat.iter().take(self.proto_params.bucket_len).filter(|(_, (_, resp_stat))|*resp_stat == RespStat::Received).count() >= 1
+        self.store_resp_stat
+            .iter()
+            .take(self.proto_params.bucket_len)
+            .filter(|(_, (_, resp_stat))| *resp_stat == RespStat::Received)
+            .count()
+            >= 1
     }
 
-    fn handle_store_ack(&mut self, msg: &serde_json::Map<String, serde_json::Value>, src: &SocketAddr, node_id: &[u8]) -> Result<()> {
+    fn handle_store_ack(
+        &mut self,
+        msg: &serde_json::Map<String, serde_json::Value>,
+        src: &SocketAddr,
+        node_id: &[u8],
+    ) -> Result<()> {
         debug!("Got store ack: {}", src);
         debug!("node_id={:?}", node_id);
 
-        let node_entry = NodeEntry { addr: src.ip().to_string().into_bytes(), port: src.port(), id: node_id.to_vec() };
-        if self.check_rpc_id(msg, STORE.as_bytes().to_vec(), &node_entry).is_err() {
+        let node_entry = NodeEntry {
+            addr: src.ip().to_string().into_bytes(),
+            port: src.port(),
+            id: node_id.to_vec(),
+        };
+        if self
+            .check_rpc_id(msg, STORE.as_bytes().to_vec(), &node_entry)
+            .is_err()
+        {
             return Ok(());
         }
 
         if let Some(object) = msg.get(ACK) {
             let ack: String = serde_json::from_value(object.clone()).unwrap();
             if ack == OK {
-
                 let distance = bits::get_distance(node_id, &self.key);
                 if let Some((_, resp_stat)) = self.store_resp_stat.get_mut(&distance) {
                     *resp_stat = RespStat::Received;
                 }
 
-                if NodeMain::have_pending_requests(&self.store_resp_stat, self.proto_params.bucket_len) {
+                if NodeMain::have_pending_requests(
+                    &self.store_resp_stat,
+                    self.proto_params.bucket_len,
+                ) {
                     debug!("Wait for pending requests results");
                     return Ok(());
                 }
@@ -1010,9 +1346,16 @@ impl NodeMain {
                 debug!("Ending store, store_resp_stat: {:?}", self.store_resp_stat);
                 if self.store_is_from_user {
                     if self.is_store_complete() {
-                        self.main_to_user_tx.send(Ok(b"success".to_vec())).expect("channel send() should not fail");
+                        self.main_to_user_tx
+                            .send(Ok(b"success".to_vec()))
+                            .expect("channel send() should not fail");
                     } else {
-                        self.main_to_user_tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, "store timeout"))).expect("channel send() should not fail");
+                        self.main_to_user_tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "store timeout",
+                            )))
+                            .expect("channel send() should not fail");
                     }
                 }
                 self.set_status(NodeMainStatus::Idle);
@@ -1029,31 +1372,54 @@ impl NodeMain {
                 *resp_stat = RespStat::ReceivedFailure;
             }
 
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "no ack in store ack"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no ack in store ack",
+            ))
         }
     }
 
-    fn store_req(&mut self,node_entry: &NodeEntry, key: &[u8], value: &[u8]) -> Result<()> {
+    fn store_req(&mut self, node_entry: &NodeEntry, key: &[u8], value: &[u8]) -> Result<()> {
         let rpc_id = self.gen_rpc_id();
         let store_req = json!({
             FUNCTION: STORE,
             KEY: key.to_vec(),
             VALUE: value.to_vec(),
             NODE_ID: self.id,
-            RPC_ID: rpc_id.clone()
+            RPC_ID: rpc_id
         });
 
         debug!("store dest: {:?}", &node_entry);
 
         let _node_entry = node_entry.clone();
         let _to_main_tx = self.to_main_tx.clone();
-        let _guard = self.timer.schedule_with_delay(chrono::Duration::seconds(self.proto_params.rpc_timeout), move || {
-            let message = Message::Timeout(STORE.as_bytes().to_vec(), _node_entry.clone());
-            let _ignored = _to_main_tx.send(message);
-        });
-        self.cmd_dest_resp.insert((STORE.as_bytes().to_vec(), node_entry.clone()), NodeRespStat{rpc_id, resp_stat: RespStat::Sent, guard: Some(_guard)});
+        let _guard = self.timer.schedule_with_delay(
+            chrono::Duration::seconds(self.proto_params.rpc_timeout),
+            move || {
+                let message = Message::Timeout(STORE.as_bytes().to_vec(), _node_entry.clone());
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
+        self.cmd_dest_resp.insert(
+            (STORE.as_bytes().to_vec(), node_entry.clone()),
+            NodeRespStat {
+                rpc_id,
+                resp_stat: RespStat::Sent,
+                guard: Some(_guard),
+            },
+        );
 
-        write_message_udp(&self.socket, &store_req.to_string().as_bytes(), &(SocketAddr::new(String::from_utf8(node_entry.addr.clone()).unwrap().parse().unwrap(), node_entry.port)))
+        write_message_udp(
+            &self.socket,
+            store_req.to_string().as_bytes(),
+            &(SocketAddr::new(
+                String::from_utf8(node_entry.addr.clone())
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                node_entry.port,
+            )),
+        )
     }
 
     fn ping(&mut self, node_entry: &NodeEntry, replacement: &NodeEntry) -> Result<()> {
@@ -1061,20 +1427,43 @@ impl NodeMain {
         let ping = json!({
             FUNCTION: PING,
             NODE_ID: self.id,
-            RPC_ID: rpc_id.clone()
+            RPC_ID: rpc_id
         });
 
         debug!("ping dest: {:?}", &node_entry);
 
         let _node_entry = node_entry.clone();
         let _to_main_tx = self.to_main_tx.clone();
-        let _guard = self.timer.schedule_with_delay(chrono::Duration::seconds(self.proto_params.rpc_timeout), move || {
-            let message = Message::Timeout(PING.as_bytes().to_vec(), _node_entry.clone());
-            let _ignored = _to_main_tx.send(message);
-        });
-        self.ping_resp_stat.insert(node_entry.clone(), (replacement.clone(), NodeRespStat{rpc_id, resp_stat: RespStat::Sent, guard: Some(_guard)}));
+        let _guard = self.timer.schedule_with_delay(
+            chrono::Duration::seconds(self.proto_params.rpc_timeout),
+            move || {
+                let message = Message::Timeout(PING.as_bytes().to_vec(), _node_entry.clone());
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
+        self.ping_resp_stat.insert(
+            node_entry.clone(),
+            (
+                replacement.clone(),
+                NodeRespStat {
+                    rpc_id,
+                    resp_stat: RespStat::Sent,
+                    guard: Some(_guard),
+                },
+            ),
+        );
 
-        write_message_udp(&self.socket, &ping.to_string().as_bytes(), &(SocketAddr::new(String::from_utf8(node_entry.addr.clone()).unwrap().parse().unwrap(), node_entry.port)))
+        write_message_udp(
+            &self.socket,
+            ping.to_string().as_bytes(),
+            &(SocketAddr::new(
+                String::from_utf8(node_entry.addr.clone())
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                node_entry.port,
+            )),
+        )
     }
 
     fn ping_ack(&self, node: &[u8], rpc_id: &[u8], src: &SocketAddr) -> Result<()> {
@@ -1084,7 +1473,7 @@ impl NodeMain {
             NODE_ID: self.id,
             RPC_ID: rpc_id
         });
-        write_message_udp(&self.socket, &ping_ack.to_string().as_bytes(), src)
+        write_message_udp(&self.socket, ping_ack.to_string().as_bytes(), src)
     }
 
     fn find_value_req(&mut self, node_entry: &NodeEntry, key: &[u8]) -> Result<()> {
@@ -1093,24 +1482,44 @@ impl NodeMain {
             FUNCTION: FIND_VALUE,
             NODE_ID: self.id,
             KEY: key,
-            RPC_ID: rpc_id.clone()
+            RPC_ID: rpc_id
         });
 
         debug!("find_value_req dest: {:?}", node_entry);
 
         let _node_entry = node_entry.clone();
         let _to_main_tx = self.to_main_tx.clone();
-        let _guard = self.timer.schedule_with_delay(chrono::Duration::seconds(self.proto_params.rpc_timeout), move || {
-            let message = Message::Timeout(FIND_VALUE.as_bytes().to_vec(), _node_entry.clone());
-            let _ignored = _to_main_tx.send(message);
-        });
-        self.cmd_dest_resp.insert((FIND_VALUE.as_bytes().to_vec(), node_entry.clone()), NodeRespStat{rpc_id, resp_stat: RespStat::Sent, guard: Some(_guard)});
+        let _guard = self.timer.schedule_with_delay(
+            chrono::Duration::seconds(self.proto_params.rpc_timeout),
+            move || {
+                let message = Message::Timeout(FIND_VALUE.as_bytes().to_vec(), _node_entry.clone());
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
+        self.cmd_dest_resp.insert(
+            (FIND_VALUE.as_bytes().to_vec(), node_entry.clone()),
+            NodeRespStat {
+                rpc_id,
+                resp_stat: RespStat::Sent,
+                guard: Some(_guard),
+            },
+        );
         let distance = bits::get_distance(&node_entry.id, key);
         if let Some((_, resp_stat)) = self.find_value_resp_stat.get_mut(&distance) {
             *resp_stat = RespStat::Sent;
         }
 
-        write_message_udp(&self.socket, &find_value_req.to_string().as_bytes(), &(SocketAddr::new(String::from_utf8(node_entry.addr.clone()).unwrap().parse().unwrap(), node_entry.port)))
+        write_message_udp(
+            &self.socket,
+            find_value_req.to_string().as_bytes(),
+            &(SocketAddr::new(
+                String::from_utf8(node_entry.addr.clone())
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                node_entry.port,
+            )),
+        )
     }
 
     fn find_node_req(&mut self, node_entry: &NodeEntry, target_node_id: &[u8]) -> Result<()> {
@@ -1119,27 +1528,53 @@ impl NodeMain {
             FUNCTION: FIND_NODE,
             NODE_ID: self.id,
             TARGET_NODE_ID: target_node_id,
-            RPC_ID: rpc_id.clone()
+            RPC_ID: rpc_id
         });
 
         debug!("find_node_req dest: {:?}", node_entry);
 
         let _node_entry = node_entry.clone();
         let _to_main_tx = self.to_main_tx.clone();
-        let _guard = self.timer.schedule_with_delay(chrono::Duration::seconds(self.proto_params.rpc_timeout), move || {
-            let message = Message::Timeout(FIND_NODE.as_bytes().to_vec(), _node_entry.clone());
-            let _ignored = _to_main_tx.send(message);
-        });
-        self.cmd_dest_resp.insert((FIND_NODE.as_bytes().to_vec(), node_entry.clone()), NodeRespStat{rpc_id, resp_stat: RespStat::Sent, guard: Some(_guard)});
-        let distance = bits::get_distance(&node_entry.id, &target_node_id);
+        let _guard = self.timer.schedule_with_delay(
+            chrono::Duration::seconds(self.proto_params.rpc_timeout),
+            move || {
+                let message = Message::Timeout(FIND_NODE.as_bytes().to_vec(), _node_entry.clone());
+                let _ignored = _to_main_tx.send(message);
+            },
+        );
+        self.cmd_dest_resp.insert(
+            (FIND_NODE.as_bytes().to_vec(), node_entry.clone()),
+            NodeRespStat {
+                rpc_id,
+                resp_stat: RespStat::Sent,
+                guard: Some(_guard),
+            },
+        );
+        let distance = bits::get_distance(&node_entry.id, target_node_id);
         if let Some((_, resp_stat)) = self.find_node_resp_stat.get_mut(&distance) {
             *resp_stat = RespStat::Sent;
         }
 
-        write_message_udp(&self.socket, &find_node_req.to_string().as_bytes(), &(SocketAddr::new(String::from_utf8(node_entry.addr.clone()).unwrap().parse().unwrap(), node_entry.port)))
+        write_message_udp(
+            &self.socket,
+            find_node_req.to_string().as_bytes(),
+            &(SocketAddr::new(
+                String::from_utf8(node_entry.addr.clone())
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                node_entry.port,
+            )),
+        )
     }
 
-    fn find_node_ack(&self, node: &[u8], rpc_id: &[u8], target_node_id: &[u8], src: &SocketAddr) -> Result<()> {
+    fn find_node_ack(
+        &self,
+        node: &[u8],
+        rpc_id: &[u8],
+        target_node_id: &[u8],
+        src: &SocketAddr,
+    ) -> Result<()> {
         debug!("find_node_ack dest: {:?}, addr={:?}", node, src);
         let node_entries = self.find_node_local(target_node_id);
         let find_node_ack = json!({
@@ -1148,10 +1583,16 @@ impl NodeMain {
             NODE_ENTRIES: node_entries,
             RPC_ID: rpc_id
         });
-        write_message_udp(&self.socket, &find_node_ack.to_string().as_bytes(), src)
+        write_message_udp(&self.socket, find_node_ack.to_string().as_bytes(), src)
     }
 
-    fn find_value_ack(&self, node: &[u8], rpc_id: &[u8], key: &[u8], src: &SocketAddr) -> Result<()> {
+    fn find_value_ack(
+        &self,
+        node: &[u8],
+        rpc_id: &[u8],
+        key: &[u8],
+        src: &SocketAddr,
+    ) -> Result<()> {
         debug!("find_value_ack dest: {:?}", node);
         let find_value_ack;
         let node_entries = self.find_node_local(key);
@@ -1170,10 +1611,17 @@ impl NodeMain {
                 RPC_ID: rpc_id
             });
         }
-        write_message_udp(&self.socket, &find_value_ack.to_string().as_bytes(), src)
+        write_message_udp(&self.socket, find_value_ack.to_string().as_bytes(), src)
     }
 
-    fn store_ack(&mut self, node: &[u8], rpc_id: &[u8], key: &[u8], value: &[u8], src: &SocketAddr) -> Result<()> {
+    fn store_ack(
+        &mut self,
+        node: &[u8],
+        rpc_id: &[u8],
+        key: &[u8],
+        value: &[u8],
+        src: &SocketAddr,
+    ) -> Result<()> {
         let now = Utc::now().timestamp();
         self.data_store.insert(key.to_vec(), (value.to_vec(), now));
         debug!("store_ack dest: {:?}", node);
@@ -1183,13 +1631,13 @@ impl NodeMain {
             RPC_ID: rpc_id,
             ACK: OK
         });
-        write_message_udp(&self.socket, &store_ack.to_string().as_bytes(), src)
+        write_message_udp(&self.socket, store_ack.to_string().as_bytes(), src)
     }
 
     fn store(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.key = key.to_vec();
         self.value = value.to_vec();
-        self.lookup_node(&key)
+        self.lookup_node(key)
     }
 
     fn find_node_local(&self, node: &[u8]) -> Vec<NodeEntry> {
@@ -1198,43 +1646,62 @@ impl NodeMain {
 
     fn find_value(&mut self, key: &[u8]) -> Result<()> {
         self.key = key.to_vec();
-        self.lookup_value(&key)
+        self.lookup_value(key)
     }
 
     fn lookup_value(&mut self, key: &[u8]) -> Result<()> {
         let node_entries = self.find_node_local(key);
         self.target_node_id = key.to_vec();
-        NodeMain::update_node_resp_stat(&self.target_node_id, node_entries, &mut self.find_value_resp_stat, RespStat::Init);
+        NodeMain::update_node_resp_stat(
+            &self.target_node_id,
+            node_entries,
+            &mut self.find_value_resp_stat,
+            RespStat::Init,
+        );
         self.try_find_value_req()
     }
 
     fn try_find_value_req(&mut self) -> Result<()> {
         for _ in 0..self.proto_params.alpha {
-            if let Some(node_entry) = NodeMain::get_next_init_node(&self.find_value_resp_stat, self.proto_params.bucket_len) {
+            if let Some(node_entry) = NodeMain::get_next_init_node(
+                &self.find_value_resp_stat,
+                self.proto_params.bucket_len,
+            ) {
                 let _ = self.find_value_req(&node_entry, &self.target_node_id.clone());
             }
         }
 
-        if NodeMain::have_pending_requests(&self.find_value_resp_stat, self.proto_params.bucket_len) {
+        if NodeMain::have_pending_requests(&self.find_value_resp_stat, self.proto_params.bucket_len)
+        {
             debug!("Wait for pending requests results");
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "No dest node for lookup_value"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No dest node for lookup_value",
+            ))
         }
     }
 
     fn try_find_node_req(&mut self) -> Result<()> {
         for _ in 0..self.proto_params.alpha {
-            if let Some(node_entry) = NodeMain::get_next_init_node(&self.find_node_resp_stat, self.proto_params.bucket_len) {
+            if let Some(node_entry) = NodeMain::get_next_init_node(
+                &self.find_node_resp_stat,
+                self.proto_params.bucket_len,
+            ) {
                 let _ = self.find_node_req(&node_entry, &self.target_node_id.clone());
             }
         }
 
-        if NodeMain::have_pending_requests(&self.find_node_resp_stat, self.proto_params.bucket_len) {
+        if NodeMain::have_pending_requests(&self.find_node_resp_stat, self.proto_params.bucket_len)
+        {
             debug!("Wait for pending requests results");
             Ok(())
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "No dest node for lookup_node"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No dest node for lookup_node",
+            ))
         }
     }
 
@@ -1243,23 +1710,39 @@ impl NodeMain {
 
         self.target_node_id = node.to_vec();
 
-        NodeMain::update_node_resp_stat(&self.target_node_id, node_entries, &mut self.find_node_resp_stat, RespStat::Init);
+        NodeMain::update_node_resp_stat(
+            &self.target_node_id,
+            node_entries,
+            &mut self.find_node_resp_stat,
+            RespStat::Init,
+        );
         self.try_find_node_req()
     }
 
     fn gen_rpc_id(&self) -> Vec<u8> {
-        let rpc_id: Vec<u8> = rand::thread_rng().sample_iter(&rand::distributions::Standard).take(self.proto_params.rpc_id_len).collect();
+        let rpc_id: Vec<u8> = rand::thread_rng()
+            .sample_iter(&rand::distributions::Standard)
+            .take(self.proto_params.rpc_id_len)
+            .collect();
         rpc_id
     }
 
-    fn update_node_resp_stat(target_node_id: &[u8], node_entries: Vec<NodeEntry>, stat: &mut BTreeMap<Distance, (NodeEntry, RespStat)>, resp_stat: RespStat) {
+    fn update_node_resp_stat(
+        target_node_id: &[u8],
+        node_entries: Vec<NodeEntry>,
+        stat: &mut BTreeMap<Distance, (NodeEntry, RespStat)>,
+        resp_stat: RespStat,
+    ) {
         for node_entry in node_entries {
-            let distance = bits::get_distance(&node_entry.id, &target_node_id);
+            let distance = bits::get_distance(&node_entry.id, target_node_id);
             stat.entry(distance).or_insert((node_entry, resp_stat));
         }
     }
 
-    fn get_next_init_node(stat: &BTreeMap<Distance, (NodeEntry, RespStat)>, bucket_len: usize) -> Option<NodeEntry> {
+    fn get_next_init_node(
+        stat: &BTreeMap<Distance, (NodeEntry, RespStat)>,
+        bucket_len: usize,
+    ) -> Option<NodeEntry> {
         for (_, (node_entry, resp_stat)) in stat.iter().take(bucket_len) {
             if *resp_stat == RespStat::Init {
                 return Some(node_entry.clone());
@@ -1268,7 +1751,10 @@ impl NodeMain {
         None
     }
 
-    fn have_pending_requests(stat: &BTreeMap<Distance, (NodeEntry, RespStat)>, bucket_len: usize) -> bool {
+    fn have_pending_requests(
+        stat: &BTreeMap<Distance, (NodeEntry, RespStat)>,
+        bucket_len: usize,
+    ) -> bool {
         for (_, (_, resp_stat)) in stat.iter().take(bucket_len) {
             if *resp_stat == RespStat::Sent {
                 return true;
@@ -1295,9 +1781,9 @@ impl NodeMain {
 pub fn show_buf<B: AsRef<[u8]>>(buf: B) -> String {
     String::from_utf8(
         buf.as_ref()
-           .iter()
-           .map(|b| escape_default(*b))
-           .flatten()
-           .collect(),
-    ).unwrap()
+            .iter()
+            .flat_map(|b| escape_default(*b))
+            .collect(),
+    )
+    .unwrap()
 }
